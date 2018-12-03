@@ -8,6 +8,8 @@ from bson.json_util import dumps
 from werkzeug.security import check_password_hash, generate_password_hash, safe_str_cmp
 from flask_jwt_extended import (JWTManager, create_access_token, create_refresh_token, decode_token, jwt_required, jwt_refresh_token_required, get_jwt_identity, get_raw_jwt)
 from bson.objectid import ObjectId
+from string_search import Search
+from timeline import View
 app = Flask(__name__)
 CORS(app)
 api = Api(app)
@@ -19,16 +21,6 @@ app.config['JWT_SECRET_KEY'] = 'jwt-secret-string'
 jwt = JWTManager(app)
 mongo = PyMongo(app)
 
-TODOS = {
-    'todo1': {'task': 'build an API'},
-    'todo2': {'task': '?????'},
-    'todo3': {'task': 'profit!'},
-}
-
-
-def abort_if_todo_doesnt_exist(todo_id):
-    if todo_id not in TODOS:
-        abort(404, message="Todo {} doesn't exist".format(todo_id))
 
 parser = reqparse.RequestParser()
 parser.add_argument('user_id')
@@ -36,11 +28,16 @@ parser.add_argument('user_pw')
 parser.add_argument('user_que')
 parser.add_argument('user_ans')
 parser.add_argument('access_token')
+parser.add_argument('title')
 parser.add_argument('contents')
 parser.add_argument('_id')
 parser.add_argument('type')
 parser.add_argument('post_id')
 parser.add_argument('comment_id')
+parser.add_argument('word')
+parser.add_argument('option')
+
+
 
 
 def auth(db):
@@ -59,24 +56,6 @@ def db_manager():
     db = client.pookle
     return db
 
-
-# Todo
-# shows a single todo item and lets you delete a todo item
-class Todo(Resource):
-    def get(self, todo_id):
-        abort_if_todo_doesnt_exist(todo_id)
-        return TODOS[todo_id]
-
-    def delete(self, todo_id):
-        abort_if_todo_doesnt_exist(todo_id)
-        del TODOS[todo_id]
-        return '', 204
-
-    def post(self, todo_id):
-        args = parser.parse_args()
-        task = {'task': args['task']}
-        TODOS[todo_id] = task
-        return task, 201
 
 
 class UserList(Resource):
@@ -104,11 +83,12 @@ class UserList(Resource):
             "ans": generate_password_hash(user_ans),
             "nickname": user_id,
             "fav_timeline":[],
-            "like_board":[],
+            "fav_board":[],
             "comment":[],
             "fav_tag": [],
             "reg_date": datetime.datetime.now(),
-            "last_date": datetime.datetime.now()
+            "last_date": datetime.datetime.now(),
+            "rank":0
         }
         collection.insert(user)
         MongoClient('mongodb://localhost:27017').close()
@@ -132,8 +112,9 @@ class UserDetail(Resource):
             "id": dict_user[0]['id'],
             "nickname" : dict_user[0]['nickname'],
             "fav_timeline" : dict_user[0]['fav_timeline'],
-            "like_board" : dict_user[0]['like_board'],
-            "fav_tag": dict_user[0]['fav_tag']
+            "fav_board" : dict_user[0]['fav_board'],
+            "fav_tag": dict_user[0]['fav_tag'],
+            "rank":dict_user[0]['rank']
         }
         print(json_user)
         MongoClient('mongodb://localhost:27017').close()
@@ -273,8 +254,8 @@ class Login(Resource):
         user_id = args['user_id']
         user_pw = args['user_pw']
         for user in users:
-            if user['user_id'] == user_id:
-                if check_password_hash(user['user_pw'], user_pw):
+            if user['id'] == user_id:
+                if check_password_hash(user['pw'], user_pw):
                     client.close()
                     access_token = create_access_token(identity=args['user_id'], expires_delta=False)
                     refresh_token = create_refresh_token(identity=args['user_id'], expires_delta=False)
@@ -313,13 +294,57 @@ class TokenRefresh(Resource):
         return {'access_token': access_token}
 
 class Timeline(Resource):
-    def get(self):
-        client = MongoClient('mongodb://localhost:27017')
+    def get(self, option):
+        db= db_manager()
+        include_tag = [
+            # 메인
+            ["기타", "공지", "거래", "대나무숲", "반짝정원", "지식인", "장학"],
+            # 진로
+            ["창업지원단", "취업", "창업", "진로"],
+            # 스터디&모임
+            ['스터디&모임', "특강", "세미나", "봉사", "동아리"],
+            # 알바&구인
+            ["조교", "과외&강사", "알바&구인"],
+            # 행사&대외활동
+            ["행사", "봉사", "공모전&대외활동", "교육&설명회", "멘토링"],
+        ]
+        list = View(db,include_tag[option],[])
+        json_list = dumps(list)
+        return json_list
+
+        '''client = MongoClient('mongodb://localhost:27017')
         db = client.pookle
         collection = db.timeline
         timeline_posts = dumps(collection.find().sort([("date", -1), ("_id", 1)]).limit(20))
         client.close()
-        return timeline_posts
+        return timeline_posts'''
+
+    def post(self):
+            args = parser.parse_args()
+            title = args['title']
+            contents = args['contents']
+            client = MongoClient('mongodb://localhost:27017')
+            db = client.pookle
+            user = auth(db)
+            post = {
+                "author": user[0]['_id'],
+                "contents": contents,
+                "fav_cnt":0,
+                "comment":[],
+                "date":datetime.datetime.now()
+            }
+            db.board.insert(post)
+            client.close()
+            return 0
+    def put(self):
+        parser.add_argument('$oid')
+        args = parser.parse_args()
+        _id = args['$oid']
+        client = MongoClient('mongodb://localhost:27017')
+        db = client.pookle
+        db.timeline.remove({'_id': ObjectId(_id)})
+
+
 
 class renewal_db(Resource):
     def get(self):
@@ -336,6 +361,16 @@ class renewal_db(Resource):
             upsert=True, multi=True
         )
         return 0
+
+class RemoveTimeline(Resource):
+    def get(self):
+        client = MongoClient('mongodb://localhost:27017')
+        db = client.pookle
+        for col in db.collection_names():
+            if(col[0:2] == 'PK'):
+                db[col].remove({})
+        db.recent_date.remove({})
+        db.SEARCH_PK_pknulec_lecture.remove({})
 
 
 class Board(Resource):
@@ -467,7 +502,14 @@ class UnFavBoard(Resource):
         }
         )
 
-
+class WordSearch(Resource):
+    def post(self):
+        args = parser.parse_args()
+        word = args['word']
+        db = db_manager()
+        list = Search(db, word)
+        print(list)
+        return 0
 
 api.add_resource(UserList, '/users')
 api.add_resource(UserDetail,'/user')
@@ -475,15 +517,18 @@ api.add_resource(editNick,'/user/nick')
 api.add_resource(changePasswd, '/user/pw')
 api.add_resource(favriteTag, '/user/fav-tag')
 api.add_resource(Login, '/user/login')
-api.add_resource(Todo, '/todos/<todo_id>')
 api.add_resource(Auth, '/auth')
 api.add_resource(Board, '/board')
 api.add_resource(Comment, '/board/comment')
-api.add_resource(Timeline, '/timeline')
+api.add_resource(Timeline, '/timeline/<int:option>')
 api.add_resource(FavTimeline, '/timeline/fav')
 api.add_resource(UnFavTimeline, '/timeline/un-fav')
 api.add_resource(FavBoard, '/board/fav')
 api.add_resource(UnFavBoard, '/board/un-fav')
+api.add_resource(WordSearch, '/search')
+
+
+api.add_resource(RemoveTimeline,'/remove-timeline')
 
 api.add_resource(renewal_db,'/renewal')
 if __name__ == '__main__':
